@@ -3,38 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>都市大バリアフリーマップ</title>
+    <title>リアルタイム現在地マップ</title>
     <style>
       body { margin: 0; padding: 0; font-family: sans-serif; }
       #map { height: 100vh; width: 100%; }
 
-      /* --- ★UIパーツのスタイル（地図の上に浮かせる） --- */
-      
-      /* 上部のフィルタボタン群 */
-      .filter-container {
-        position: absolute; /* 絶対配置で地図の上に重ねる */
-        top: 10px;
-        left: 10px;
-        z-index: 5; /* 地図より手前に表示 */
-        display: flex;
-        gap: 10px;
-      }
-
-      .btn {
-        background: white;
-        border: none;
-        padding: 10px 15px;
-        border-radius: 20px; /* 丸っこくしてアプリっぽく */
-        box-shadow: 0 2px 6px rgba(0,0,0,0.3); /* 影をつけて浮遊感を出す */
-        font-weight: bold;
-        cursor: pointer;
-        font-size: 14px;
-      }
-      .btn:active { background: #eee; }
-      .btn-blue { color: #007bff; border: 2px solid #007bff; }
-      .btn-all { color: #333; }
-
-      /* 右下の現在地ボタン */
       .gps-btn {
         position: absolute;
         bottom: 25px;
@@ -43,121 +16,135 @@
         background: white;
         width: 50px;
         height: 50px;
-        border-radius: 50%; /* 完全な円形 */
+        border-radius: 50%;
         border: none;
         box-shadow: 0 2px 6px rgba(0,0,0,0.3);
         cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
         font-size: 24px;
+        /* ボタンを押した感触を出す */
+        display: flex; align-items: center; justify-content: center;
       }
+      .gps-btn:active { background: #eee; }
     </style>
   </head>
   <body>
-    <div class="filter-container">
-      <button class="btn btn-all" onclick="filterMap('all')">すべて表示</button>
-      <button class="btn btn-blue" onclick="filterMap('accessible')">♿ バリアフリーのみ</button>
-    </div>
-
-    <button class="gps-btn" onclick="getMyLocation()">📍</button>
+    <button class="gps-btn" onclick="toggleTracking()">◎</button>
 
     <div id="map"></div>
 
     <script>
-      let map; // 他の関数からも使えるように外に出す
-      let markers = []; // 作ったピンを管理するためのリスト
+      let map;
+      let myMarker = null; // 自分の位置を示すマーカー
+      let myAccuracyCircle = null; // 誤差範囲を示す円
+      let watchId = null; // 追跡プロセスID（止める時に使う）
+      let isTracking = false; // 今、自動追尾しているかどうか
 
       function initMap() {
+        // 初期表示位置（とりあえず大学）
         const targetLocation = { lat: 35.598352, lng: 139.650828 };
 
-        // 地図のコントロール（右下の＋－ボタンなど）を消してスッキリさせる設定
         map = new google.maps.Map(document.getElementById("map"), {
           center: targetLocation,
           zoom: 17,
-          disableDefaultUI: true, // ★これで一気にアプリっぽい見た目になります
-          zoomControl: true,      // ズームボタンだけは残す
+          disableDefaultUI: true,
+          zoomControl: true,
         });
 
-        const spots = [
-          { name: "東京都市大学 世田谷キャンパス", lat: 35.598352, lng: 139.651045, status: 0 },
-          { name: "1号館（標準ピン）", lat: 35.599108, lng: 139.650828, status: 1 },
-          { name: "2号館（標準ピン）", lat: 35.599256, lng: 139.651566, status: 1 },
-          { name: "3号館（標準ピン）", lat: 35.598915, lng: 139.651366, status: 1 },
-          { name: "図書館（バリアフリー）", lat: 35.59824931232551, lng: 139.65043268191414, status: 2 }, // 仮のデータ追加
-        ];
-
-        spots.forEach((spot) => {
-          let iconUrl = null; 
-          // status: 0 (バリアフリー) の時だけ青いアイコン
-          if (spot.status === 0) {
-            iconUrl = "http://maps.google.com/mapfiles/ms/icons/blue-dot.png"; 
-          }
-
-          const marker = new google.maps.Marker({
-            position: { lat: spot.lat, lng: spot.lng },
-            map: map,
-            title: spot.name,
-            icon: iconUrl,
-          });
-          
-          // ★あとで操作できるように、マーカー自体にstatus情報を埋め込んでリストに保存
-          marker.customStatus = spot.status; 
-          markers.push(marker);
-        });
+        // ピン（スポット）の表示など他の処理はここに書く...
+        // 今回は省略
+        
+        // ★アプリ起動と同時に位置情報追跡を開始するならここに入れる
+        startTracking();
       }
 
-      // --- ★機能追加: フィルタリング ---
-      function filterMap(type) {
-        markers.forEach((marker) => {
-          if (type === 'all') {
-            marker.setVisible(true); // 全員表示
-          } else if (type === 'accessible') {
-            // statusが2（バリアフリー）なら表示、それ以外は非表示
-            if (marker.customStatus === 2) {
-              marker.setVisible(true);
-            } else {
-              marker.setVisible(false);
-            }
-          }
-        });
-      }
+      // --- ★ここからリアルタイム追跡の心臓部 ---
 
-      // --- ★機能追加: GPS現在地取得 ---
-      function getMyLocation() {
-        // ブラウザが位置情報に対応しているか確認
+      function startTracking() {
         if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(
-            (position) => {
-              const pos = {
-                lat: position.coords.latitude,
-                lng: position.coords.longitude,
-              };
-
-              // 現在地に青い円を描画（自分）
-              new google.maps.Marker({
-                position: pos,
-                map: map,
-                icon: {
-                  path: google.maps.SymbolPath.CIRCLE,
-                  scale: 10,
-                  fillColor: "#4285F4", // Googleブルー
-                  fillOpacity: 1,
-                  strokeWeight: 2,
-                  strokeColor: "white",
-                },
-                title: "現在地",
-              });
-
-              map.setCenter(pos); // 地図の中心を移動
-              map.setZoom(19);    // ズームイン
-            },
-            () => {
-              alert("位置情報の取得に失敗しました。");
+          // watchPosition: 位置が変わるたびに success関数 が呼ばれる
+          watchId = navigator.geolocation.watchPosition(
+            success, 
+            error, 
+            {
+              enableHighAccuracy: true, // 高精度モード（バッテリー消費増だが正確）
+              timeout: 5000,            // 5秒以内に反応がなければ諦める
+              maximumAge: 0             // 常に最新の情報を取る（キャッシュしない）
             }
           );
+          isTracking = true;
         } else {
           alert("このブラウザは位置情報に対応していません。");
+        }
+      }
+
+      // 位置情報の取得に成功した時に何度も呼ばれる関数
+      function success(position) {
+        const currentPos = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        };
+        const accuracy = position.coords.accuracy; // 誤差（メートル）
+
+        // 1. 自分マーカーがまだ無ければ作る
+        if (!myMarker) {
+          // 青い丸（Googleマップ風のデザイン）
+          myMarker = new google.maps.Marker({
+            position: currentPos,
+            map: map,
+            icon: {
+              path: google.maps.SymbolPath.CIRCLE,
+              scale: 8, // 丸の大きさ
+              fillColor: "#4285F4", // Googleブルー
+              fillOpacity: 1,
+              strokeColor: "white", // 白い縁取り
+              strokeWeight: 2,
+            },
+            title: "現在地",
+            zIndex: 999 // 他のピンより手前に表示
+          });
+
+          // 誤差を示す薄い円
+          myAccuracyCircle = new google.maps.Circle({
+            map: map,
+            center: currentPos,
+            radius: accuracy, // 精度(m)を半径にする
+            fillColor: "#4285F4",
+            fillOpacity: 0.2, // 薄くする
+            strokeColor: "#4285F4",
+            strokeOpacity: 0.4,
+            strokeWeight: 1,
+            zIndex: 998 
+          });
+
+          // 初回だけ地図の中心を移動
+          map.panTo(currentPos);
+
+        } else {
+          // 2. 既にマーカーがあるなら、位置だけ更新する（アニメーションでヌルっと動く）
+          myMarker.setPosition(currentPos);
+          myAccuracyCircle.setCenter(currentPos);
+          myAccuracyCircle.setRadius(accuracy);
+          
+          // 追跡モード中なら、地図の中心も移動させ続ける
+          if (isTracking) {
+             map.panTo(currentPos);
+          }
+        }
+      }
+
+      function error(e) {
+        console.warn("位置情報の取得エラー: " + e.message);
+      }
+
+      // ボタンを押した時の処理（地図の中心を自分に戻す）
+      function toggleTracking() {
+        isTracking = true; // 追跡フラグをON
+        // もしマーカーがあればそこへ移動
+        if (myMarker) {
+          map.panTo(myMarker.getPosition());
+          map.setZoom(18);
+        } else {
+          startTracking(); // まだ開始してなければ開始
         }
       }
     </script>
