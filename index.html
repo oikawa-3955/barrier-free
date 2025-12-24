@@ -3,148 +3,211 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>リアルタイム現在地マップ</title>
+    <title>都市大バリアフリーマップ（完全版）</title>
     <style>
       body { margin: 0; padding: 0; font-family: sans-serif; }
       #map { height: 100vh; width: 100%; }
 
+      /* --- UI: フィルタボタン（左上） --- */
+      .filter-container {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 5;
+        display: flex;
+        gap: 8px;
+      }
+      .btn {
+        background: white;
+        border: none;
+        padding: 8px 12px;
+        border-radius: 20px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        font-weight: bold;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .btn:active { background: #eee; }
+      .btn-blue { color: #007bff; border: 2px solid #007bff; }
+      .btn-all { color: #333; }
+
+      /* --- UI: 現在地ボタン（右下） --- */
       .gps-btn {
         position: absolute;
-        bottom: 25px;
-        right: 10px;
+        bottom: 30px; /* Googleロゴと重ならないよう少し上へ */
+        right: 15px;
         z-index: 5;
         background: white;
         width: 50px;
         height: 50px;
         border-radius: 50%;
         border: none;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
         cursor: pointer;
         font-size: 24px;
-        /* ボタンを押した感触を出す */
         display: flex; align-items: center; justify-content: center;
+        color: #555;
       }
       .gps-btn:active { background: #eee; }
     </style>
   </head>
   <body>
-    <button class="gps-btn" onclick="toggleTracking()">◎</button>
+    
+    <div class="filter-container">
+      <button class="btn btn-all" onclick="filterMap('all')">すべて</button>
+      <button class="btn btn-blue" onclick="filterMap('accessible')">♿ バリアフリーのみ</button>
+    </div>
+
+    <button class="gps-btn" onclick="centerMyLocation()">◎</button>
 
     <div id="map"></div>
 
     <script>
       let map;
-      let myMarker = null; // 自分の位置を示すマーカー
-      let myAccuracyCircle = null; // 誤差範囲を示す円
-      let watchId = null; // 追跡プロセスID（止める時に使う）
-      let isTracking = false; // 今、自動追尾しているかどうか
+      let markers = []; // 全スポットのピンを管理する配列
+      
+      // 現在地関連の変数
+      let myMarker = null;
+      let myAccuracyCircle = null;
+      let watchId = null;
 
       function initMap() {
-        // 初期表示位置（とりあえず大学）
+        // 初期座標（都市大）
         const targetLocation = { lat: 35.598352, lng: 139.650828 };
 
+        // 地図生成
         map = new google.maps.Map(document.getElementById("map"), {
           center: targetLocation,
           zoom: 17,
-          disableDefaultUI: true,
-          zoomControl: true,
+          disableDefaultUI: true, // デフォルトUIを消してアプリっぽく
+          zoomControl: true,      // ズームボタンは残す
+          mapTypeControl: false,
+          streetViewControl: false,
+          fullscreenControl: false
         });
 
-        // ピン（スポット）の表示など他の処理はここに書く...
-        // 今回は省略
-        
-        // ★アプリ起動と同時に位置情報追跡を開始するならここに入れる
+        // --- データ定義 ---
+        const spots = [
+          { name: "東京都市大学 世田谷キャンパス", lat: 35.598352, lng: 139.651045, status: 0 },
+          { name: "1号館", lat: 35.599108, lng: 139.650828, status: 1 },
+          { name: "2号館", lat: 35.599256, lng: 139.651566, status: 1 },
+          { name: "3号館", lat: 35.598915, lng: 139.651366, status: 1 },
+          { name: "図書館（バリアフリー）", lat: 35.598500, lng: 139.650900, status: 0 },
+          { name: "4号館", lat: 35.598673, lng: 139.651166, status: 1 },
+        ];
+
+        // --- ピンを立てるループ処理 ---
+        spots.forEach((spot) => {
+          let iconUrl = null; // デフォルトは赤ピン(null)
+
+          // バリアフリー(status:0)なら青アイコン
+          if (spot.status === 0) {
+            iconUrl = "http://maps.google.com/mapfiles/ms/icons/blue-dot.png"; 
+          }
+
+          const marker = new google.maps.Marker({
+            position: { lat: spot.lat, lng: spot.lng },
+            map: map,
+            title: spot.name,
+            icon: iconUrl, 
+          });
+
+          // フィルタリング用にstatus情報をマーカーに埋め込む
+          marker.customStatus = spot.status;
+
+          // クリック時の吹き出し
+          const infoWindow = new google.maps.InfoWindow({
+            content: `<div style="padding:5px; font-weight:bold;">${spot.name}</div>`
+          });
+          marker.addListener("click", () => {
+            infoWindow.open(map, marker);
+          });
+
+          // 配列に保存（あとでフィルタ操作するため）
+          markers.push(marker);
+        });
+
+        // --- アプリ起動時に現在地追跡を開始 ---
         startTracking();
       }
 
-      // --- ★ここからリアルタイム追跡の心臓部 ---
+      // --- 機能1: フィルタリング ---
+      function filterMap(type) {
+        markers.forEach((marker) => {
+          if (type === 'all') {
+            marker.setVisible(true);
+          } else if (type === 'accessible') {
+            // statusが0なら表示、それ以外は非表示
+            marker.setVisible(marker.customStatus === 0);
+          }
+        });
+      }
 
+      // --- 機能2: リアルタイム現在地追跡 ---
       function startTracking() {
         if (navigator.geolocation) {
-          // watchPosition: 位置が変わるたびに success関数 が呼ばれる
           watchId = navigator.geolocation.watchPosition(
-            success, 
-            error, 
+            (position) => {
+              const currentPos = {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+              };
+              const accuracy = position.coords.accuracy;
+
+              // 初回作成または位置更新
+              if (!myMarker) {
+                // 自分用マーカー（青い丸）
+                myMarker = new google.maps.Marker({
+                  position: currentPos,
+                  map: map,
+                  icon: {
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: 7,
+                    fillColor: "#4285F4",
+                    fillOpacity: 1,
+                    strokeColor: "white",
+                    strokeWeight: 2,
+                  },
+                  zIndex: 999
+                });
+                // 誤差円
+                myAccuracyCircle = new google.maps.Circle({
+                  map: map,
+                  center: currentPos,
+                  radius: accuracy,
+                  fillColor: "#4285F4",
+                  fillOpacity: 0.1,
+                  strokeColor: "#4285F4",
+                  strokeOpacity: 0.3,
+                  strokeWeight: 1,
+                  zIndex: 998
+                });
+              } else {
+                // 既にマーカーがある場合は移動させる
+                myMarker.setPosition(currentPos);
+                myAccuracyCircle.setCenter(currentPos);
+                myAccuracyCircle.setRadius(accuracy);
+              }
+            },
+            (error) => {
+              console.warn("位置情報エラー: " + error.message);
+            },
             {
-              enableHighAccuracy: true, // 高精度モード（バッテリー消費増だが正確）
-              timeout: 5000,            // 5秒以内に反応がなければ諦める
-              maximumAge: 0             // 常に最新の情報を取る（キャッシュしない）
+              enableHighAccuracy: true,
+              timeout: 10000,
+              maximumAge: 0
             }
           );
-          isTracking = true;
-        } else {
-          alert("このブラウザは位置情報に対応していません。");
         }
       }
 
-      // 位置情報の取得に成功した時に何度も呼ばれる関数
-      function success(position) {
-        const currentPos = {
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-        };
-        const accuracy = position.coords.accuracy; // 誤差（メートル）
-
-        // 1. 自分マーカーがまだ無ければ作る
-        if (!myMarker) {
-          // 青い丸（Googleマップ風のデザイン）
-          myMarker = new google.maps.Marker({
-            position: currentPos,
-            map: map,
-            icon: {
-              path: google.maps.SymbolPath.CIRCLE,
-              scale: 8, // 丸の大きさ
-              fillColor: "#4285F4", // Googleブルー
-              fillOpacity: 1,
-              strokeColor: "white", // 白い縁取り
-              strokeWeight: 2,
-            },
-            title: "現在地",
-            zIndex: 999 // 他のピンより手前に表示
-          });
-
-          // 誤差を示す薄い円
-          myAccuracyCircle = new google.maps.Circle({
-            map: map,
-            center: currentPos,
-            radius: accuracy, // 精度(m)を半径にする
-            fillColor: "#4285F4",
-            fillOpacity: 0.2, // 薄くする
-            strokeColor: "#4285F4",
-            strokeOpacity: 0.4,
-            strokeWeight: 1,
-            zIndex: 998 
-          });
-
-          // 初回だけ地図の中心を移動
-          map.panTo(currentPos);
-
-        } else {
-          // 2. 既にマーカーがあるなら、位置だけ更新する（アニメーションでヌルっと動く）
-          myMarker.setPosition(currentPos);
-          myAccuracyCircle.setCenter(currentPos);
-          myAccuracyCircle.setRadius(accuracy);
-          
-          // 追跡モード中なら、地図の中心も移動させ続ける
-          if (isTracking) {
-             map.panTo(currentPos);
-          }
-        }
-      }
-
-      function error(e) {
-        console.warn("位置情報の取得エラー: " + e.message);
-      }
-
-      // ボタンを押した時の処理（地図の中心を自分に戻す）
-      function toggleTracking() {
-        isTracking = true; // 追跡フラグをON
-        // もしマーカーがあればそこへ移動
+      // --- 機能3: ボタンで現在地へ移動 ---
+      function centerMyLocation() {
         if (myMarker) {
           map.panTo(myMarker.getPosition());
-          map.setZoom(18);
+          map.setZoom(18); // ズームイン
         } else {
-          startTracking(); // まだ開始してなければ開始
+          alert("現在地を取得中です...");
         }
       }
     </script>
